@@ -75,3 +75,11 @@ IGNIS_LAN_IP=172.16.11.201 docker compose -f compose.yaml -f compose.lan.yaml up
 ```
 
 Для отключения LAN запустите `docker compose up -d --wait db` без дополнительного файла. После смены IP проверьте адрес и подсеть перед повторным запуском.
+
+## Доступ к API из LAN
+
+```bash
+IGNIS_LAN_IP=172.16.11.201 docker compose -f compose.yaml -f compose.lan.yaml up --build -d --wait
+```
+
+Swagger доступен по `http://172.16.11.201:8000/docs`, базовый URL API — `http://172.16.11.201:8000/api/v1`. Если фронтенд открыт на другом origin, укажите его в `CORS_ORIGINS` перед запуском Compose. API внутри Docker подключается к PostgreSQL по имени сервиса `db`.

@@ -2,3 +2,6 @@ services:
   db:
     ports:
       - "${IGNIS_LAN_IP:?Set IGNIS_LAN_IP to the host LAN IPv4}:55432:5432"
+  api:
+    ports:
+      - "${IGNIS_LAN_IP:?Set IGNIS_LAN_IP to the host LAN IPv4}:8000:8000"
