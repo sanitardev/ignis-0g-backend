@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -14,6 +15,7 @@ from app.schemas.assistant import ChatRequest, ChatResponse, Citation
 
 class GroundedAnswer(BaseModel):
     model_config = ConfigDict(strict=True)
+    status: Literal["answered", "insufficient_evidence"]
     answer: str
     citation_indices: list[int]
 
@@ -21,8 +23,8 @@ class GroundedAnswer(BaseModel):
 def insufficient_evidence(question: str = "") -> ChatResponse:
     russian = not question or bool(re.search(r"[А-Яа-яЁё]", question))
     message = (
-        "В доступных источниках недостаточно данных для подтвержденного ответа."
-        if russian else "The available sources do not provide enough evidence to answer."
+        "В доступных источниках пока нет сведений, на которые можно опереться для ответа."
+        if russian else "I couldn’t find enough evidence in the available sources to answer this question."
     )
     return ChatResponse(
         status="insufficient_evidence",
@@ -76,7 +78,7 @@ class RagService:
             except ProviderUnavailable:
                 pass
 
-        context = evidence[:self.settings.context_limit]
+        context = select_context(evidence, self.settings.context_limit)
         return validate_answer(await self.llm.generate(build_messages(request, context)), context, request.message)
 
 
@@ -86,10 +88,27 @@ async def ask(request: ChatRequest) -> ChatResponse:
         return await RagService(embedding, reranker, llm, settings, PgVectorRepository()).ask(request)
 
 
+def select_context(evidence: list[Evidence], limit: int) -> list[Evidence]:
+    selected = []
+    seen = set()
+    for item in evidence:
+        key = (item.study_slug, " ".join(item.excerpt.casefold().split()))
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(item)
+        if len(selected) == limit:
+            break
+    return selected
+
+
 def validate_answer(raw: object, evidence: list[Evidence], question: str) -> ChatResponse:
     try:
         result = GroundedAnswer.model_validate(raw)
     except ValidationError:
+        return insufficient_evidence(question)
+
+    if result.status == "insufficient_evidence":
         return insufficient_evidence(question)
 
     answer = result.answer.strip()
@@ -101,16 +120,14 @@ def validate_answer(raw: object, evidence: list[Evidence], question: str) -> Cha
         or not indices
         or len(set(indices)) != len(indices)
         or any(not 1 <= index <= len(evidence) for index in indices)
-        or (markers and markers != [str(index) for index in indices])
+        or markers != [str(index) for index in indices]
+        or re.search(r"\[[0-9]+\]\s*\([^\n)]*\)|(?m:^\s{0,3}\[[0-9]+\]:)", answer)
     ):
         return insufficient_evidence(question)
 
     cited = [evidence[index - 1] for index in indices]
     renumber = {str(index): str(number) for number, index in enumerate(indices, start=1)}
-    if markers:
-        answer = re.sub(r"\[([0-9]+)\]", lambda match: f"[{renumber[match[1]]}]", answer)
-    else:
-        answer += " " + " ".join(f"[{number}]" for number in renumber.values())
+    answer = re.sub(r"\[([0-9]+)\]", lambda match: f"[{renumber[match[1]]}]", answer)
     citations = [
         Citation(
             chunk_id=item.chunk_id, source_id=item.source_id, title=item.title,

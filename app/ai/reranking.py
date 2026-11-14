@@ -13,7 +13,10 @@ class RemoteReranker:
         response = await self.api.post("/rerank", {
             "model": self.model,
             "query": query,
-            "documents": [item.excerpt for item in documents],
+            "documents": [
+                "\n".join(filter(None, (item.study_slug, item.title, item.locator, item.excerpt)))
+                for item in documents
+            ],
             "top_n": len(documents),
         })
         try:
