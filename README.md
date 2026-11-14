@@ -2,29 +2,39 @@
 
 API каталога читает данные из локального PostgreSQL. Пустая база возвращает пустой каталог. AI пока использует мок: отвечает `insufficient_evidence`. CLI-импорт доступен; полноценный AI ещё не реализован.
 
-## Запуск
+## Запуск через Docker
+
+```bash
+docker compose up --build -d --wait
+curl -fsS http://127.0.0.1:8000/health
+```
+
+Compose запускает PostgreSQL, применяет миграции и поднимает API. Swagger доступен на http://127.0.0.1:8000/docs. Для остановки используйте `docker compose stop`.
+
+## Запуск API на хосте
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e .
+pip install -r requirements.lock
+pip install --no-deps -e .
 uvicorn app.main:app --reload
 ```
 
-Интерактивный контракт: http://127.0.0.1:8000/docs. Целевая схема БД и полный контракт, включая P1 и импорт, зафиксированы в [архитектуре](docs/ARCHITECTURE.md) и [спецификации API](docs/API_SPEC.md). Реализованы маршруты P0 каталога, datasets и чата; чат возвращает `insufficient_evidence`. `/health` проверяет PostgreSQL через SELECT 1 и возвращает 503 при недоступности БД.
+Интерактивный контракт: http://127.0.0.1:8000/docs. Целевая схема БД и полный контракт, включая P1 и импорт, зафиксированы в [архитектуре](docs/ARCHITECTURE.md) и [спецификации API](docs/API_SPEC.md). Доступны каталог, наборы данных, отдельные маршруты источников, выводов и медиа, а также проверенные связи и граф Nexus. Чат и сравнение возвращают `insufficient_evidence`. `/health` проверяет PostgreSQL через SELECT 1 и возвращает 503 при недоступности БД.
 
 ## Схема PostgreSQL
 
 Задайте `DATABASE_URL` с драйвером asyncpg, например `postgresql+asyncpg://user:password@localhost:5432/ignis`, затем выполните `alembic upgrade head`. Для отката: `alembic downgrade base`. API использует DATABASE_URL из окружения; по умолчанию подключается к локальному Compose на порту 55432.
 
-Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется будущим импортёром. Таблица chunks и расширение pgvector будут добавлены отдельной миграцией после согласования модели и размерности эмбеддингов.
+Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Таблица chunks и расширение pgvector будут добавлены отдельной миграцией после согласования модели и размерности эмбеддингов.
 
 ## Локальная база данных
 
 Нужны Docker и Docker Compose. Данные хранятся в Docker-томе `postgres_data` и сохраняются после остановки контейнера.
 
 ```bash
-docker compose up -d --wait
+docker compose up -d --wait db
 DATABASE_URL=postgresql+asyncpg://ignis:ignis_local@127.0.0.1:55432/ignis .venv/bin/alembic upgrade head
 ```
 
@@ -32,7 +42,7 @@ DATABASE_URL=postgresql+asyncpg://ignis:ignis_local@127.0.0.1:55432/ignis .venv/
 
 ## Проверки
 
-После запуска БД и миграции: `.venv/bin/pip install -e ".[test]"` и `.venv/bin/python -m pytest -q`. Интеграционные данные создаются в транзакции и откатываются.
+После запуска БД и миграции выполните `.venv/bin/python -m pytest -q`. Зависимости для тестов входят в `requirements.lock`. GitHub Actions запускает тесты на чистой PostgreSQL и проверяет применение и откат миграций. Интеграционные данные создаются в транзакции и откатываются.
 
 ## Импорт исследовательских данных
 

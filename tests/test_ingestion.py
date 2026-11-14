@@ -57,3 +57,42 @@ def test_invalid_dataset(change):
     raw.update(change)
     with pytest.raises(ValueError):
         Dataset.model_validate(raw)
+
+
+def test_database_failure_rolls_back(monkeypatch):
+    from app.services import ingestion
+    async def run():
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            factory = async_sessionmaker(connection,expire_on_commit=False,join_transaction_mode='create_savepoint')
+            slug='rollback-'+uuid4().hex
+            original=ingestion.upsert
+            calls=0
+            async def failing(*args,**kwargs):
+                nonlocal calls
+                calls+=1
+                if calls==2:
+                    raise RuntimeError('simulated write failure')
+                return await original(*args,**kwargs)
+            monkeypatch.setattr(ingestion,'upsert',failing)
+            package=Package.model_validate({'schema_version':1,'studies':[{'slug':slug,'title':'test','description':'test','category':'test','sources':[{'source_key':'s','title':'test','url':'https://example.com','source_type':'other'}]}]})
+            try:
+                with pytest.raises(RuntimeError):
+                    await import_package(package,factory=factory)
+                async with factory() as session:
+                    assert await session.scalar(select(Study.id).where(Study.slug==slug)) is None
+            finally:
+                await transaction.rollback()
+        await engine.dispose()
+    asyncio.run(run())
+
+@pytest.mark.parametrize('change',[
+    {'schema_version':2},
+    {'studies':[{'slug':'BAD SLUG','title':'a','description':'a','category':'a'}]},
+    {'studies':[{'slug':'a','title':'a','description':'a','category':'a','sources':[{'source_key':'s','title':'a','url':'file:///tmp/test','source_type':'other'}]}]},
+    {'relations':[{'from_study_id':'a','to_study_id':'a','relation_type':'similar','source_study_id':'a','source_key':'s','explanation':'a','evidence':{'excerpt':'a'}}]},
+    {'relations':[{'from_study_id':'a','to_study_id':'b','relation_type':'similar','source_study_id':'c','source_key':'s','explanation':'a','evidence':{'excerpt':'a'}}]},
+])
+def test_invalid_package(change):
+    with pytest.raises(ValueError):
+        Package.model_validate({'schema_version':1,'studies':[],**change})
