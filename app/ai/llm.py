@@ -15,12 +15,19 @@ class RemoteLLM:
     async def generate(self, messages: Sequence[Message]) -> object:
         if not self.model:
             raise ProviderUnavailable("Chat model is missing")
-        response = await self.api.post("/chat/completions", {
+        payload = {
             "model": self.model,
             "messages": list(messages),
             "max_tokens": 2400,
             "temperature": 0.2,
-        })
+        }
+        if self.api.base_url == "https://openrouter.ai/api/v1":
+            payload.update(
+                max_tokens=600,
+                response_format={"type": "json_object"},
+                provider={"sort": "latency", "require_parameters": True},
+            )
+        response = await self.api.post("/chat/completions", payload)
         try:
             choice = response["choices"][0]
             if choice["finish_reason"] not in {"stop", "end_turn"}:
