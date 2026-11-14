@@ -46,3 +46,25 @@ class ChatResponse(BaseModel):
     citations: list[Citation]
     related_study_ids: list[str]
     suggested_questions: list[str]
+
+class CompareRequest(BaseModel):
+    study_ids: list[str] = Field(min_length=2, max_length=3)
+    focus: str | None = Field(default=None, max_length=300)
+
+    @model_validator(mode='after')
+    def distinct(self):
+        if len(set(self.study_ids)) != len(self.study_ids):
+            raise ValueError('study_ids must be unique')
+        return self
+
+class CompareItem(BaseModel):
+    text: str
+    citation_indices: list[int]
+
+class CompareResponse(BaseModel):
+    status: Literal['answered', 'insufficient_evidence']
+    summary: str
+    similarities: list[CompareItem]
+    differences: list[CompareItem]
+    limitations: list[str]
+    citations: list[Citation]
