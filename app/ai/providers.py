@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from time import monotonic
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
@@ -9,6 +11,8 @@ import httpx
 
 if TYPE_CHECKING:
     from app.ai.retrieval import Evidence
+
+logger = logging.getLogger("uvicorn.error.rag")
 
 Message = dict[str, str]
 
@@ -52,6 +56,7 @@ class JsonAPI:
             raise ProviderUnavailable("Missing or invalid provider configuration")
 
         for attempt in range(self.retries + 1):
+            started = monotonic()
             try:
                 async with asyncio.timeout(self.timeout):
                     response = await self.client.post(
@@ -64,6 +69,7 @@ class JsonAPI:
             except httpx.TransportError:
                 failure = ProviderUnavailable
             else:
+                logger.info("rag provider endpoint=%s status=%d attempt=%d elapsed_ms=%d", path, response.status_code, attempt + 1, (monotonic() - started) * 1000)
                 if response.is_success:
                     try:
                         data = response.json()
@@ -79,6 +85,8 @@ class JsonAPI:
                 if response.status_code in {408, 504}:
                     failure = ProviderTimeout
 
+            if failure is ProviderTimeout or failure is ProviderUnavailable:
+                logger.info("rag provider endpoint=%s outcome=%s attempt=%d", path, failure.__name__, attempt + 1)
             if attempt == self.retries:
                 raise failure("Provider request failed") from None
             await asyncio.sleep(0.15 * (2 ** attempt))

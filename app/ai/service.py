@@ -1,4 +1,8 @@
+import logging
 import re
+from time import monotonic
+
+logger = logging.getLogger("uvicorn.error.rag")
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -45,8 +49,10 @@ class RagService:
         self.repository = repository
 
     async def ask(self, request: ChatRequest) -> ChatResponse:
+        started = monotonic()
         revision = index_revision(self.embedding, self.settings)
         if not await self.repository.has_chunks(request, revision):
+            logger.info("rag outcome=no_index")
             return insufficient_evidence(request.message)
 
         query = request.message
@@ -54,14 +60,17 @@ class RagService:
             try:
                 rewritten = await self.llm.generate(rewrite_messages(request))
             except ProviderUnavailable:
+                logger.info("rag stage=rewrite outcome=fallback")
                 rewritten = None
             if isinstance(rewritten, dict) and isinstance(rewritten.get("query"), str):
                 candidate = rewritten["query"].strip()
                 if 0 < len(candidate) <= 2000:
                     query = candidate
 
+        logger.info("rag stage=embedding")
         vector = vector_parameter(await self.embedding.embed_query(query))
         evidence = await self.repository.search(request, vector, revision, self.settings.candidate_limit)
+        logger.info("rag stage=retrieval candidates=%d", len(evidence))
         if not evidence:
             return insufficient_evidence(request.message)
         if self.reranker:
@@ -74,10 +83,13 @@ class RagService:
                         item for index, item in enumerate(evidence) if index not in ranked
                     ]
             except ProviderUnavailable:
-                pass
+                logger.info("rag stage=rerank outcome=fallback")
 
         context = evidence[:self.settings.context_limit]
-        return validate_answer(await self.llm.generate(build_messages(request, context)), context, request.message)
+        logger.info("rag stage=generation context_count=%d", len(context))
+        result = validate_answer(await self.llm.generate(build_messages(request, context)), context, request.message)
+        logger.info("rag outcome=%s citations=%d elapsed_ms=%d", result.status, len(result.citations), (monotonic() - started) * 1000)
+        return result
 
 
 async def ask(request: ChatRequest) -> ChatResponse:
@@ -90,19 +102,25 @@ def validate_answer(raw: object, evidence: list[Evidence], question: str) -> Cha
     try:
         result = GroundedAnswer.model_validate(raw)
     except ValidationError:
+        logger.info("rag stage=validation outcome=invalid_response_shape")
         return insufficient_evidence(question)
 
     answer = result.answer.strip()
     markers = list(dict.fromkeys(re.findall(r"\[([0-9]+)\]", answer)))
     indices = result.citation_indices
-    if (
-        not answer
-        or re.search(r"<(?:/?[A-Za-z]|!--)", answer)
-        or not indices
-        or len(set(indices)) != len(indices)
-        or any(not 1 <= index <= len(evidence) for index in indices)
-        or markers != [str(index) for index in indices]
-    ):
+    reason = None
+    if not answer:
+        reason = 'empty_answer'
+    elif re.search(r"<(?:/?[A-Za-z]|!--)", answer):
+        reason = 'html_in_answer'
+    elif not indices:
+        reason = 'no_citations'
+    elif len(set(indices)) != len(indices) or any(not 1 <= index <= len(evidence) for index in indices):
+        reason = 'invalid_citation_indices'
+    elif markers != [str(index) for index in indices]:
+        reason = 'citation_marker_mismatch'
+    if reason:
+        logger.info("rag stage=validation outcome=%s", reason)
         return insufficient_evidence(question)
 
     cited = [evidence[index - 1] for index in indices]
