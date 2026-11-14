@@ -1,6 +1,6 @@
 # IGNIS 0G backend
 
-API каталога читает данные из локального PostgreSQL. Пустая база возвращает пустой каталог. AI пока использует мок: отвечает `insufficient_evidence`. CLI-импорт доступен; полноценный AI ещё не реализован.
+API каталога читает данные из локального PostgreSQL. Пустая база возвращает пустой каталог. Чат использует RAG по индексированным источникам. Пока индекс пуст, он отвечает `insufficient_evidence`.
 
 ## Запуск через Docker
 
@@ -21,13 +21,13 @@ pip install --no-deps -e .
 uvicorn app.main:app --reload
 ```
 
-Интерактивный контракт: http://127.0.0.1:8000/docs. Целевая схема БД и полный контракт, включая P1 и импорт, зафиксированы в [архитектуре](docs/ARCHITECTURE.md) и [спецификации API](docs/API_SPEC.md). Доступны каталог, наборы данных, отдельные маршруты источников, выводов и медиа, а также проверенные связи и граф Nexus. Чат и сравнение возвращают `insufficient_evidence`. `/health` проверяет PostgreSQL через SELECT 1 и возвращает 503 при недоступности БД.
+Интерактивный контракт: http://127.0.0.1:8000/docs. Целевая схема БД и полный контракт, включая P1 и импорт, зафиксированы в [архитектуре](docs/ARCHITECTURE.md) и [спецификации API](docs/API_SPEC.md). Доступны каталог, наборы данных, отдельные маршруты источников, выводов и медиа, а также проверенные связи и граф Nexus. Сравнение пока возвращает `insufficient_evidence`. `/health` проверяет PostgreSQL через SELECT 1 и возвращает 503 при недоступности БД.
 
 ## Схема PostgreSQL
 
 Задайте `DATABASE_URL` с драйвером asyncpg, например `postgresql+asyncpg://user:password@localhost:5432/ignis`, затем выполните `alembic upgrade head`. Для отката: `alembic downgrade base`. API использует DATABASE_URL из окружения; по умолчанию подключается к локальному Compose на порту 55432.
 
-Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Миграция `0002_chunks` включает pgvector и создаёт таблицу `chunks`. Поле `embedding` использует тип `vector` без фиксированной размерности до выбора модели. Перед добавлением индекса и поиском по рабочим данным нужно зафиксировать одну размерность. Генерация эмбеддингов и индексация ещё не подключены.
+Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Миграция `0002_chunks` включает pgvector и создаёт таблицу `chunks`. Миграция `0003_embedding_dimension_1024` задаёт размерность 1024 для Alem. Индексация запускается отдельно.
 
 ## Локальная база данных
 
@@ -83,3 +83,47 @@ IGNIS_LAN_IP=172.16.11.201 docker compose -f compose.yaml -f compose.lan.yaml up
 ```
 
 Swagger доступен по `http://172.16.11.201:8000/docs`, базовый URL API — `http://172.16.11.201:8000/api/v1`. Если фронтенд открыт на другом origin, укажите его в `CORS_ORIGINS` перед запуском Compose. API внутри Docker подключается к PostgreSQL по имени сервиса `db`.
+## Индексация и чат
+
+Настройте `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` по `.env.example`.
+Для Alem задайте отдельные ключи `LLM_API_KEY`, `EMBEDDING_API_KEY` и
+`RERANKER_API_KEY`. Модели в примере — `qwen3-8`, `text-1024` и
+`reranker`. Модель эмбеддингов должна возвращать **1024** измерения. Адаптер
+для `text-1024` использует её собственную размерность. Параметр
+`EMBEDDING_SEND_DIMENSIONS=true` включает передачу `dimensions=1024`
+для совместимых API. Миграция сохраняет существующие векторы размерности 1024. Если в базе есть векторы другой размерности, она откатится.
+
+```bash
+set -a
+. ./.env
+set +a
+alembic upgrade head
+python -m scripts.index_sources --check-provider
+python -m scripts.import_nasa_kb /path/to/nasa-fire-safety-kb --dry-run
+python -m scripts.import_nasa_kb /path/to/nasa-fire-safety-kb
+python -m scripts.index_sources
+uvicorn app.main:app
+```
+
+Начальные параметры `RAG_CHUNK_TOKENS=400`, `RAG_CHUNK_OVERLAP=50`,
+`RAG_CANDIDATE_LIMIT=20`, `RAG_CONTEXT_LIMIT=5`, `RAG_BATCH_SIZE=32`.
+`RAG_TIMEOUT` задаёт таймаут каждой попытки, `RAG_RETRIES` задаёт число
+повторов после временной ошибки. Для внешнего `/rerank` укажите
+`RERANKER_MODEL` и при необходимости параметры отдельного сервиса.
+Без reranker или при его недоступности используется порядок pgvector.
+
+Карточки импортируются как вторичные источники. Реестр даёт ссылку на портал
+NASA NTRS и идентификатор публикации, который сохраняется в названии источника.
+Чанки сохраняют раздел Markdown и страницу PDF, если она существует.
+Для других документов используйте существующий импорт с
+`--documents manifest.json`. Манифест сопоставляет slug и ключ источника с
+файлом относительно манифеста, например
+`{"flex-1":{"report":"docs/report.pdf"}}`. Поддерживаются PDF с текстовым
+слоем, Markdown и TXT. При сборке Docker таблица токенизации загружается
+заранее. На хосте tiktoken кеширует её при первой индексации.
+
+```bash
+curl -fsS http://127.0.0.1:8000/api/v1/assistant/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Какие выводы приводит карточка FLEX-1?","study_id":"flex-1"}'
+```

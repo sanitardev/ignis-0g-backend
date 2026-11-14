@@ -3,12 +3,13 @@ import os
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
+from app.core.database import async_database_url
 from app.models import Base
 
 config = context.config
 url = os.environ.get('DATABASE_URL')
 if url:
-    config.set_main_option('sqlalchemy.url', url.replace('%', '%%'))
+    config.set_main_option('sqlalchemy.url', async_database_url(url).replace('%', '%%'))
 target_metadata = Base.metadata
 
 def offline():

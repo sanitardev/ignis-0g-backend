@@ -91,7 +91,7 @@ class Chunk(Base):
     chunk_index: Mapped[int] = mapped_column(nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_metadata: Mapped[dict] = mapped_column('metadata', JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
     __table_args__ = (
         UniqueConstraint('source_id', 'chunk_index'),
         CheckConstraint('chunk_index >= 0', name='ck_chunks_nonnegative_index'),

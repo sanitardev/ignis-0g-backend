@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TIKTOKEN_CACHE_DIR=/opt/tiktoken
 COPY requirements.lock pyproject.toml ./
-RUN pip install --no-cache-dir -r requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock \
+    && python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 COPY app app
 COPY scripts scripts
 COPY migrations migrations

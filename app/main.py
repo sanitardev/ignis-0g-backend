@@ -13,6 +13,7 @@ from app.schemas.study import Finding, Source, Media
 from app.schemas.assistant import CompareRequest, CompareResponse
 from app.schemas.nexus import Relation, Graph
 from app.repositories import nexus
+from app.ai.providers import ProviderTimeout, ProviderUnavailable
 from app.ai.service import ask
 from app.schemas.assistant import ChatRequest, ChatResponse
 from app.schemas.study import StudyDetail, StudyList, CatalogFilters, Dataset
@@ -51,7 +52,8 @@ async def request_id(request: Request, call_next):
             if count >= 5:
                 raise HTTPException(429, ('RATE_LIMITED','Request limit exceeded'), headers={'Retry-After':str(max(1,int(60-(now-start))))})
             rate_windows[client] = (start,count+1)
-        async with asyncio.timeout(10):
+        timeout = 40 if request.url.path == '/api/v1/assistant/chat' else 10
+        async with asyncio.timeout(timeout):
             response = await call_next(request)
     except HTTPException as exc:
         response = await http_error(request, exc)
@@ -103,7 +105,13 @@ async def dataset(study_id: str, dataset_id: UUID):
 async def chat(request: ChatRequest):
     if request.study_id is not None:
         await repository.require_study(request.study_id)
-    return await ask(request)
+    try:
+        async with asyncio.timeout(35):
+            return await ask(request)
+    except (ProviderTimeout, TimeoutError):
+        raise HTTPException(504, ('AI_TIMEOUT', 'Assistant request timed out')) from None
+    except ProviderUnavailable:
+        raise HTTPException(503, ('AI_UNAVAILABLE', 'Assistant unavailable')) from None
 
 @app.get('/health', response_model=Health)
 async def health(request: Request):

@@ -6,6 +6,12 @@ from app.main import app, rate_windows
 
 
 def test_http_contract(monkeypatch):
+    from app.ai.service import insufficient_evidence
+
+    async def assistant_stub(request):
+        return insufficient_evidence()
+
+    monkeypatch.setattr(importlib.import_module('app.main'), 'ask', assistant_stub)
     async def run():
         rate_windows.clear()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test',headers={'Origin':'http://localhost:5173'}) as client:

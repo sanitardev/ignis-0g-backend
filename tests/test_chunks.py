@@ -25,16 +25,16 @@ def test_chunks_constraints_and_cosine_search():
                         await session.flush()
                         source_id = source.id
                         session.add_all([
-                            Chunk(source_id=source_id, chunk_index=0, content='first', embedding=[1, 0]),
-                            Chunk(source_id=source_id, chunk_index=1, content='second', embedding=[0, 1]),
+                            Chunk(source_id=source_id, chunk_index=0, content='first', embedding=[1, 0] + [0] * 1022),
+                            Chunk(source_id=source_id, chunk_index=1, content='second', embedding=[0, 1] + [0] * 1022),
                         ])
                         await session.flush()
-                        query = select(Chunk.content).where(Chunk.source_id == source_id).order_by(Chunk.embedding.cosine_distance([1, 0]))
+                        query = select(Chunk.content).where(Chunk.source_id == source_id).order_by(Chunk.embedding.cosine_distance([1, 0] + [0] * 1022))
                         assert list(await session.scalars(query)) == ['first', 'second']
                         for index, ref in [(0, source_id), (-1, source_id), (0, uuid4())]:
                             with pytest.raises(IntegrityError):
                                 async with session.begin_nested():
-                                    session.add(Chunk(source_id=ref, chunk_index=index, content='invalid', embedding=[1, 0]))
+                                    session.add(Chunk(source_id=ref, chunk_index=index, content='invalid', embedding=[1, 0] + [0] * 1022))
                                     await session.flush()
                         await session.execute(delete(Source).where(Source.id == source_id))
                         assert list(await session.scalars(query)) == []
