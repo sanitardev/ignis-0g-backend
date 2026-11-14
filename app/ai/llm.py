@@ -1,49 +1,30 @@
-import asyncio
 import json
-import os
+from collections.abc import Sequence
 
-import httpx
-
-ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-oss-20b"
-_generation_slots = asyncio.Semaphore(2)
+from app.ai.providers import JsonAPI, Message, ProviderUnavailable
 
 
-class ProviderUnavailable(Exception):
-    pass
+class RemoteLLM:
+    def __init__(self, api: JsonAPI, model: str):
+        self.api = api
+        self.model = model
 
-
-class ProviderTimeout(Exception):
-    pass
-
-
-async def generate(messages: list[dict[str, str]]) -> object:
-    key = os.getenv("GROQ_API_KEY") or os.getenv("LLM_API_KEY")
-    if not key:
-        raise ProviderUnavailable
-    payload = {
-        "model": os.getenv("LLM_MODEL") or DEFAULT_MODEL,
-        "messages": messages,
-        "response_format": {"type": "json_object"},
-        "max_completion_tokens": 1600,
-        "temperature": 0.2,
-    }
-    try:
-        async with asyncio.timeout(7):
-            async with _generation_slots, httpx.AsyncClient(timeout=7, trust_env=False) as client:
-                response = await client.post(
-                    ENDPOINT, headers={"Authorization": f"Bearer {key}"}, json=payload
-                )
-                response.raise_for_status()
-    except (TimeoutError, httpx.TimeoutException):
-        raise ProviderTimeout from None
-    except httpx.HTTPError:
-        raise ProviderUnavailable from None
-
-    try:
-        choice = response.json()["choices"][0]
-        if choice["finish_reason"] != "stop":
+    async def generate(self, messages: Sequence[Message]) -> object:
+        if not self.model:
+            raise ProviderUnavailable("Chat model is missing")
+        response = await self.api.post("/chat/completions", {
+            "model": self.model,
+            "messages": list(messages),
+            "max_tokens": 1200,
+            "temperature": 0.2,
+        })
+        try:
+            choice = response["choices"][0]
+            if choice["finish_reason"] not in {"stop", "end_turn"}:
+                return None
+            content = choice["message"]["content"].strip()
+            if content.startswith("```json") and content.endswith("```"):
+                content = content[7:-3].strip()
+            return json.loads(content)
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError):
             return None
-        return json.loads(choice["message"]["content"])
-    except (ValueError, KeyError, TypeError, IndexError):
-        return None

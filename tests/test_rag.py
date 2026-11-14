@@ -1,61 +1,96 @@
 import asyncio
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from app.ai import service
-from app.ai.ingestion import split_text
+import pytest
+
+from app.ai.ingestion import document_chunks, tokenizer
+from app.ai.providers import ProviderUnavailable
 from app.ai.retrieval import Evidence
+from app.ai.service import RagService
+from app.ai.settings import RagSettings
 from app.schemas.assistant import ChatRequest
 
 
-def test_chunking_preserves_text_and_bounds():
-    text = " ".join(f"word-{number}" for number in range(200))
-    chunks = list(split_text(text, size=100, overlap=20))
-    assert chunks[0].startswith("word-0 ")
-    assert chunks[-1].endswith("word-199")
-    assert all(0 < len(chunk) <= 100 and chunk in text for chunk in chunks)
+def test_sections_pages_and_token_limits():
+    settings = RagSettings(chunk_tokens=40, chunk_overlap=8)
+    text = "---\nid: 42\n---\n# Study\n## Methods\n" + "A sentence about material. " * 100
+    text += "\f## Results\nA result."
+    chunks = list(document_chunks(text, settings))
+    assert len(chunks) > 2
+    assert chunks[0].section == "Study / Methods"
+    assert chunks[-1].page == 2
+    assert chunks[-1].section == "Results"
+    assert all("id: 42" not in chunk.content for chunk in chunks)
+    assert all(len(tokenizer().encode_ordinary(chunk.content)) <= 40 for chunk in chunks)
 
 
-def test_answer_uses_database_citations_and_study_scope(monkeypatch):
-    evidence = Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", "Excerpt", "p. 3")
-    retrieve = AsyncMock(return_value=[evidence])
-    generate = AsyncMock(return_value={"answer": "Supported [1].", "citation_indices": [1]})
-    monkeypatch.setattr(service, "retrieve", retrieve)
-    monkeypatch.setattr(service, "generate", generate)
+def test_rerank_fallback_and_reject_citations():
+    from tests.rag_mocks import MockEmbedding, MockLLM, MockReranker
 
-    request = ChatRequest(message="What was reported?", study_id="flex")
-    result = asyncio.run(service.ask(request))
-    retrieve.assert_awaited_once_with(request)
-    assert result.status == "answered"
-    assert result.related_study_ids == ["flex"]
-    assert result.citations[0].chunk_id == evidence.chunk_id
-    assert result.citations[0].excerpt == "Excerpt"
+    documents = [
+        Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", f"Excerpt {i}", None)
+        for i in range(7)
+    ]
 
-    generate.return_value = {"answer": "Invented [2].", "citation_indices": [2]}
-    assert asyncio.run(service.ask(request)).status == "insufficient_evidence"
+    class Repository:
+        async def has_chunks(self, request, revision):
+            return True
 
-    generate.return_value = {"answer": "Supported.", "citation_indices": [1]}
-    assert asyncio.run(service.ask(request)).answer == "Supported. [1]"
+        async def search(self, request, vector, revision, limit):
+            assert limit == 20
+            return documents
 
-    generate.reset_mock()
-    retrieve.return_value = []
-    assert asyncio.run(service.ask(request)).status == "insufficient_evidence"
-    generate.assert_not_called()
+    async def run():
+        llm = MockLLM([{"query": "Standalone"}, {"answer": "Supported [1].", "citation_indices": [1]}])
+        embedding = MockEmbedding()
+        reranker = MockReranker(ProviderUnavailable())
+        rag = RagService(embedding, reranker, llm, RagSettings(), Repository())
+        request = ChatRequest(message="What about it?", history=[{"role":"user","content":"FLEX"}])
+        answer = await rag.ask(request)
+        assert embedding.queries == ["Standalone"]
+        assert answer.citations[0].chunk_id == documents[0].chunk_id
+        assert "Excerpt 4" in llm.messages[-1][-1]["content"]
+        assert "Excerpt 5" not in llm.messages[-1][-1]["content"]
+
+        llm.responses.extend([{"query": "Standalone"}, {"answer": "Invented [7].", "citation_indices": [7]}])
+        assert (await rag.ask(request)).status == "insufficient_evidence"
+
+        reranker.result = [6, 5]
+        llm.responses.extend([{"query": "Standalone"}, {"answer": "Reranked [1].", "citation_indices": [1]}])
+        assert (await rag.ask(request)).citations[0].chunk_id == documents[6].chunk_id
+
+    asyncio.run(run())
 
 
-def test_indexing_scope_stale_sources_and_citations(monkeypatch):
+def test_provider_retries_and_does_not_retry_authentication():
+    import httpx
+    from app.ai.providers import JsonAPI
+
+    async def run():
+        statuses = iter([503, 200, 401])
+        calls = []
+
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(next(statuses), json={"ok": True})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            api = JsonAPI(client, "https://example.test/v1", "mock-key", 1, 1)
+            assert await api.post("/chat/completions", {}) == {"ok": True}
+            with pytest.raises(ProviderUnavailable, match="401"):
+                await api.post("/chat/completions", {})
+            assert len(calls) == 3
+
+    asyncio.run(run())
+
+
+def test_reindex_on_model_change_and_keep_old_index_when_provider_fails(monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from app.ai import ingestion, retrieval
     from app.core.database import engine
     from app.schemas.ingestion import Package
     from app.services.ingestion import import_package
-
-    vector = "[" + ",".join(["1", *["0"] * 383]) + "]"
-    monkeypatch.setattr(ingestion, "embed", lambda texts: [vector] * len(texts))
-    monkeypatch.setattr(retrieval, "embed", lambda texts: [vector] * len(texts))
-    monkeypatch.setattr(service, "generate", AsyncMock(
-        return_value={"answer": "Supported [1].", "citation_indices": [1]}
-    ))
+    from tests.rag_mocks import MockEmbedding, MockLLM
 
     async def run():
         async with engine.connect() as connection:
@@ -65,6 +100,12 @@ def test_indexing_scope_stale_sources_and_citations(monkeypatch):
             )
             monkeypatch.setattr(ingestion, "session_factory", factory)
             monkeypatch.setattr(retrieval, "session_factory", factory)
+            settings = RagSettings(batch_size=1)
+            original = MockEmbedding()
+            llm = MockLLM([{"answer": "Supported [1].", "citation_indices": [1]}] * 3)
+            repository = retrieval.PgVectorRepository()
+            rag = RagService(original, None, llm, settings, repository)
+            request = ChatRequest(message="What was reported?", study_id="rag-one")
             raw = {"schema_version": 1, "studies": [
                 {
                     "slug": f"rag-{suffix}", "title": "Synthetic",
@@ -72,36 +113,69 @@ def test_indexing_scope_stale_sources_and_citations(monkeypatch):
                     "sources": [{
                         "source_key": "example", "title": f"Report {suffix}",
                         "url": "https://example.org/report", "source_type": "report",
-                        "text_content": f"Synthetic excerpt {suffix}",
+                        "text_content": f"# Results\nSynthetic excerpt {suffix}",
                     }],
-                }
-                for suffix in ("one", "two")
+                } for suffix in ("one", "two")
             ]}
             try:
                 await import_package(Package.model_validate(raw), factory=factory)
-                assert await ingestion.index_sources() == 2
-                assert await ingestion.index_sources() == 0
-                query = ChatRequest(message="What was reported?", study_id="rag-one")
-                answer = await service.ask(query)
-                assert answer.status == "answered"
-                assert answer.related_study_ids == ["rag-one"]
-                assert answer.citations[0].excerpt == "Synthetic excerpt one"
-                old_chunk = answer.citations[0].chunk_id
+                assert await ingestion.index_sources(original, settings) == 2
+                assert len(original.batches) == 2
+                assert await ingestion.index_sources(original, settings) == 0
+                first = await rag.ask(request)
+                assert first.related_study_ids == ["rag-one"]
+                assert first.citations[0].locator == "Results"
+                assert first.citations[0].excerpt == "Synthetic excerpt one"
 
-                raw["studies"][0]["sources"][0]["text_content"] = "Revised passage"
-                await import_package(Package.model_validate(raw), factory=factory)
-                assert (await service.ask(query)).status == "insufficient_evidence"
-                assert await ingestion.index_sources() == 1
-                answer = await service.ask(query)
-                assert answer.citations[0].excerpt == "Revised passage"
-                assert answer.citations[0].chunk_id != old_chunk
+                replacement = MockEmbedding()
+                replacement.model_id = "new-embedding-model"
+                replacement.vector = [1.0]
+                with pytest.raises(ProviderUnavailable, match="384-dimensional"):
+                    await ingestion.index_sources(replacement, settings)
+                assert (await rag.ask(request)).citations == first.citations
+
+                replacement.vector = original.vector
+                assert await ingestion.index_sources(replacement, settings) == 2
+                assert (await rag.ask(request)).status == "insufficient_evidence"
+                updated = await RagService(replacement, None, llm, settings, repository).ask(request)
+                assert updated.citations[0].chunk_id != first.citations[0].chunk_id
 
                 raw["studies"][0]["sources"][0]["text_content"] = None
                 await import_package(Package.model_validate(raw), factory=factory)
-                assert await ingestion.index_sources() == 1
-                assert (await service.ask(query)).status == "insufficient_evidence"
+                assert await ingestion.index_sources(replacement, settings) == 1
+                assert await ingestion.index_sources(replacement, settings) == 0
             finally:
                 await transaction.rollback()
         await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_embedding_adapter_orders_batch_response_and_requests_schema_dimension():
+    import json
+
+    import httpx
+
+    from app.ai.embeddings import DIMENSION, RemoteEmbedding, vector_parameter
+    from app.ai.providers import JsonAPI
+
+    async def run():
+        def respond(request):
+            payload = json.loads(request.content)
+            assert request.url.path == "/v1/embeddings"
+            assert payload["dimensions"] == DIMENSION
+            return httpx.Response(200, json={"data": [
+                {"index": index, "embedding": [index + 1.0] + [0.0] * (DIMENSION - 1)}
+                for index in reversed(range(len(payload["input"])))
+            ]})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            adapter = RemoteEmbedding(
+                JsonAPI(client, "https://example.test/v1", "mock-key", 1, 0),
+                "remote-mock", send_dimensions=True,
+            )
+            first, second = await adapter.embed_documents(["one", "two"])
+            assert json.loads(vector_parameter(first))[0] == 1
+            assert json.loads(vector_parameter(second))[0] == 2
 
     asyncio.run(run())
