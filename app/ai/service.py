@@ -1,8 +1,7 @@
 import logging
 import re
 from time import monotonic
-
-logger = logging.getLogger("uvicorn.error.rag")
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -16,40 +15,31 @@ from app.ai.wiring import configured_providers
 from app.schemas.assistant import ChatRequest, ChatResponse, Citation
 
 
+logger = logging.getLogger("uvicorn.error.rag")
+
+
 class GroundedAnswer(BaseModel):
     model_config = ConfigDict(strict=True)
+    status: Literal["answered", "insufficient_evidence"]
     answer: str
+    suggested_questions: object = None
 
 
-def insufficient_evidence(question: str = "") -> ChatResponse:
+def insufficient_evidence(
+    question: str = "", *, suggestions: list[str] | None = None,
+) -> ChatResponse:
     russian = not question or bool(re.search(r"[А-Яа-яЁё]", question))
     message = (
-        "В доступных источниках недостаточно данных для подтвержденного ответа."
-        if russian else "The available sources do not provide enough evidence to answer."
+        "В доступных источниках пока нет сведений, на которые можно опереться для ответа."
+        if russian else "I couldn’t find enough evidence in the available sources to answer this question."
     )
     return ChatResponse(
         status="insufficient_evidence",
         answer=message,
         citations=[],
         related_study_ids=[],
-        suggested_questions=[],
+        suggested_questions=suggestions or [],
     )
-
-
-def select_context(evidence: list[Evidence], limit: int, *, diversify: bool) -> list[Evidence]:
-    if not diversify:
-        return evidence[:limit]
-
-    first_per_study = []
-    remaining = []
-    seen = set()
-    for item in evidence:
-        if item.study_slug in seen:
-            remaining.append(item)
-        else:
-            first_per_study.append(item)
-            seen.add(item.study_slug)
-    return (first_per_study + remaining)[:limit]
 
 
 class RagService:
@@ -113,12 +103,61 @@ async def ask(request: ChatRequest) -> ChatResponse:
         return await RagService(embedding, reranker, llm, settings, PgVectorRepository()).ask(request)
 
 
+def select_context(evidence: list[Evidence], limit: int, *, diversify: bool = False) -> list[Evidence]:
+    selected = []
+    deferred = []
+    seen_passages = set()
+    seen_studies = set()
+    for item in evidence:
+        key = (item.study_slug, " ".join(item.excerpt.casefold().split()))
+        if key in seen_passages:
+            continue
+        seen_passages.add(key)
+        if diversify and item.study_slug in seen_studies:
+            deferred.append(item)
+        else:
+            selected.append(item)
+            seen_studies.add(item.study_slug)
+        if len(selected) == limit:
+            break
+    return (selected + deferred)[:limit]
+
+
+def suggested_questions(raw: object, current_question: str) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    questions = []
+    seen = {" ".join(current_question.casefold().split())}
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        question = " ".join(item.split())
+        if (
+            not 5 <= len(question) <= 160
+            or not question.endswith(("?", "？", "؟"))
+            or re.search(r"[<>\[\]`]|://", question)
+        ):
+            continue
+        key = question.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        questions.append(question)
+        if len(questions) == 2:
+            break
+    return questions
+
+
 def validate_answer(raw: object, evidence: list[Evidence], question: str) -> ChatResponse:
     try:
         result = GroundedAnswer.model_validate(raw)
     except ValidationError:
         logger.info("rag stage=validation outcome=invalid_response_shape")
         return insufficient_evidence(question)
+
+    suggestions = suggested_questions(result.suggested_questions, question)
+    if result.status == "insufficient_evidence":
+        return insufficient_evidence(question, suggestions=suggestions)
 
     answer = result.answer.strip()
     markers = list(dict.fromkeys(re.findall(r"\[([0-9]+)\]", answer)))
@@ -132,6 +171,8 @@ def validate_answer(raw: object, evidence: list[Evidence], question: str) -> Cha
         reason = 'no_citations'
     elif any(marker not in valid_markers for marker in markers):
         reason = 'invalid_citation_indices'
+    elif re.search(r"\[[0-9]+\]\s*\([^\n)]*\)|(?m:^\s{0,3}\[[0-9]+\]:)", answer):
+        reason = 'linked_citation'
     if reason:
         logger.info("rag stage=validation outcome=%s", reason)
         return insufficient_evidence(question)
@@ -151,5 +192,5 @@ def validate_answer(raw: object, evidence: list[Evidence], question: str) -> Cha
         answer=answer,
         citations=citations,
         related_study_ids=list(dict.fromkeys(item.study_slug for item in cited)),
-        suggested_questions=[],
+        suggested_questions=suggestions,
     )

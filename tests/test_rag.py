@@ -42,7 +42,7 @@ def test_rerank_fallback_and_reject_citations():
             return documents
 
     async def run():
-        llm = MockLLM([{"query": "Standalone"}, {"answer": "Supported [1].", "citation_indices": [1]}])
+        llm = MockLLM([{"query": "Standalone"}, {"status": "answered", "answer": "Supported [1].", "citation_indices": [1]}])
         embedding = MockEmbedding()
         reranker = MockReranker(ProviderUnavailable())
         rag = RagService(embedding, reranker, llm, RagSettings(), Repository())
@@ -53,11 +53,11 @@ def test_rerank_fallback_and_reject_citations():
         assert "Excerpt 4" in llm.messages[-1][-1]["content"]
         assert "Excerpt 5" not in llm.messages[-1][-1]["content"]
 
-        llm.responses.extend([{"query": "Standalone"}, {"answer": "Invented [7].", "citation_indices": [7]}])
+        llm.responses.extend([{"query": "Standalone"}, {"status": "answered", "answer": "Invented [7].", "citation_indices": [7]}])
         assert (await rag.ask(request)).status == "insufficient_evidence"
 
         reranker.result = [6, 5]
-        llm.responses.extend([{"query": "Standalone"}, {"answer": "Reranked [1].", "citation_indices": [1]}])
+        llm.responses.extend([{"query": "Standalone"}, {"status": "answered", "answer": "Reranked [1].", "citation_indices": [1]}])
         assert (await rag.ask(request)).citations[0].chunk_id == documents[6].chunk_id
 
     asyncio.run(run())
@@ -102,8 +102,16 @@ def test_reindex_on_model_change_and_keep_old_index_when_provider_fails(monkeypa
             monkeypatch.setattr(ingestion, "session_factory", factory)
             monkeypatch.setattr(retrieval, "session_factory", factory)
             settings = RagSettings(batch_size=1)
-            original = MockEmbedding()
-            llm = MockLLM([{"answer": "Supported [1].", "citation_indices": [1]}] * 3)
+            class DistinctEmbedding(MockEmbedding):
+                async def embed_documents(self, texts):
+                    vectors = await super().embed_documents(texts)
+                    return [
+                        vector if passage.endswith("one") else [0.0, *vector[:-1]]
+                        for passage, vector in zip(texts, vectors, strict=True)
+                    ]
+
+            original = DistinctEmbedding()
+            llm = MockLLM([{"status": "answered", "answer": "Supported [1].", "citation_indices": [1]}] * 3)
             repository = retrieval.PgVectorRepository()
             rag = RagService(original, None, llm, settings, repository)
             request = ChatRequest(message="What was reported?", study_id="rag-one")
@@ -123,6 +131,17 @@ def test_reindex_on_model_change_and_keep_old_index_when_provider_fails(monkeypa
                 assert await ingestion.index_sources(original, settings) == 2
                 assert len(original.batches) == 2
                 assert await ingestion.index_sources(original, settings) == 0
+                from app.ai.embeddings import vector_parameter
+
+                vector = vector_parameter(original.vector)
+                revision = ingestion.index_revision(original, settings)
+                global_query = ChatRequest(message="Results", scope="global", study_id="rag-two")
+                matches = await repository.search(global_query, vector, revision, 2)
+                assert [item.study_slug for item in matches] == ["rag-one", "rag-two"]
+                scoped_query = ChatRequest(message="Results", study_id="rag-two")
+                matches = await repository.search(scoped_query, vector, revision, 2)
+                assert [item.study_slug for item in matches] == ["rag-two"]
+
                 first = await rag.ask(request)
                 assert first.related_study_ids == ["rag-one"]
                 assert first.citations[0].locator == "Results"
@@ -191,11 +210,11 @@ def test_inline_citations_determine_response_order():
         Evidence(uuid4(), uuid4(), 'demo', 'Test', 'https://example.org', 'Example', None)
         for _ in range(2)
     ]
-    response = validate_answer({"answer": "Second [2]. First [1]. Second again [2].", "citation_indices": [1]}, evidence, "Question")
+    response = validate_answer({"status": "answered", "answer": "Second [2]. First [1]. Second again [2].", "citation_indices": [1]}, evidence, "Question")
     assert response.answer == "Second [1]. First [2]. Second again [1]."
     assert [item.chunk_id for item in response.citations] == [evidence[1].chunk_id, evidence[0].chunk_id]
     for answer in ("No inline source.", "Invalid [3].", "Mixed [1][0]."):
-        assert validate_answer({"answer": answer}, evidence, "Question").status == "insufficient_evidence"
+        assert validate_answer({"status": "answered", "answer": answer}, evidence, "Question").status == "insufficient_evidence"
 
 
 def test_global_context_prioritizes_multiple_studies():
@@ -204,8 +223,163 @@ def test_global_context_prioritizes_multiple_studies():
     from app.ai.service import select_context
 
     rows = [
-        Evidence(uuid4(), uuid4(), slug, 'Test', 'https://example.org', 'Example', None)
-        for slug in ('flex', 'flex', 'acme', 'saffire')
+        Evidence(uuid4(), uuid4(), slug, 'Test', 'https://example.org', str(index), None)
+        for index, slug in enumerate(('flex', 'flex', 'acme', 'saffire'))
     ]
     assert select_context(rows, 3, diversify=True) == [rows[0], rows[2], rows[3]]
     assert select_context(rows, 3, diversify=False) == rows[:3]
+
+
+def test_context_skips_duplicate_passages_and_uses_distinct_sections():
+    from app.ai.service import select_context
+
+    def item(study, excerpt, locator):
+        return Evidence(uuid4(), uuid4(), study, study, "https://example.org", excerpt, locator)
+
+    results = [
+        item("flex", "Reported result", "Results"),
+        item("flex", "reported  result", "Results"),
+        item("bass", "Reported result", "Results"),
+        item("flex", "Test conditions", "Methods"),
+    ]
+    assert select_context(results, limit=3) == [results[0], results[2], results[3]]
+
+
+@pytest.mark.parametrize("answer,indices", [
+    ("Claim without a citation.", [1]),
+    ("Claim [1], other claim [9].", [1]),
+    ("Claim [1](https://example.org/forged).", [1]),
+])
+def test_citations_reject_missing_invalid_or_linked_markers(answer, indices):
+    from app.ai.service import validate_answer
+
+    evidence = [
+        Evidence(uuid4(), uuid4(), "flex", f"Report {index}", "https://example.org", "Excerpt", None)
+        for index in range(2)
+    ]
+    response = validate_answer({"status": "answered", "answer": answer, "citation_indices": indices}, evidence, "Question")
+    assert response.status == "insufficient_evidence"
+    assert response.citations == []
+
+
+def test_citations_follow_first_reference_and_reuse_verified_metadata():
+    from app.ai.service import validate_answer
+
+    evidence = [
+        Evidence(uuid4(), uuid4(), slug, title, url, excerpt, locator)
+        for slug, title, url, excerpt, locator in [
+            ("flex", "FLEX", "https://example.org/flex", "First excerpt", "Methods"),
+            ("bass", "BASS", "https://example.org/bass", "Second excerpt", "Results"),
+        ]
+    ]
+    response = validate_answer(
+        {"status": "answered", "answer": "One [2]. Two [1]. Again [2].", "citation_indices": [2, 1]},
+        evidence, "Question",
+    )
+    assert response.answer == "One [1]. Two [2]. Again [1]."
+    assert response.related_study_ids == ["bass", "flex"]
+    for citation, item in zip(response.citations, reversed(evidence), strict=True):
+        assert (citation.chunk_id, citation.source_id, citation.url, citation.excerpt, citation.locator) == (
+            item.chunk_id, item.source_id, item.url, item.excerpt, item.locator,
+        )
+
+
+def test_reranker_receives_experiment_title_and_section():
+    import json
+
+    import httpx
+
+    from app.ai.providers import JsonAPI
+    from app.ai.reranking import RemoteReranker
+
+    def respond(request):
+        document, = json.loads(request.content)["documents"]
+        assert "FLEX-1" in document and "Methods" in document and "Excerpt" in document
+        return httpx.Response(200, json={"results": [{"index": 0}]})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            reranker = RemoteReranker(JsonAPI(client, "https://example.test", "mock-key", 1, 0), "mock")
+            evidence = Evidence(uuid4(), uuid4(), "flex-1", "FLEX-1", "https://example.org", "Excerpt", "Methods")
+            assert await reranker.rerank("How was FLEX-1 conducted?", [evidence]) == [0]
+
+    asyncio.run(run())
+
+
+def test_openrouter_uses_configured_budget_and_reports_truncation():
+    import json
+
+    import httpx
+
+    from app.ai.llm import RemoteLLM
+    from app.ai.providers import JsonAPI
+
+    def respond(request):
+        payload = json.loads(request.content)
+        assert payload["max_tokens"] == 3200
+        assert payload["reasoning"] == {"enabled": False}
+        assert payload["response_format"] == {"type": "json_object"}
+        return httpx.Response(200, json={"choices": [{"finish_reason": "length"}]})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            llm = RemoteLLM(JsonAPI(client, "https://openrouter.ai/api/v1", "mock-key", 1, 0), "mock", 3200)
+            with pytest.raises(ProviderUnavailable, match="token limit"):
+                await llm.generate([{"role": "user", "content": "Test"}])
+
+    asyncio.run(run())
+
+
+def test_insufficient_evidence_never_returns_related_claims_or_citations():
+    from app.ai.service import validate_answer
+
+    item = Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", "The instrument was used", None)
+    result = validate_answer({
+        "status": "insufficient_evidence",
+        "answer": "The instrument was used [1].",
+        "citation_indices": [1],
+    }, [item], "What was the instrument's serial number?")
+    assert result.status == "insufficient_evidence"
+    assert result.citations == []
+    assert not result.related_study_ids
+
+
+def test_dialogue_suggestions_are_optional_and_safe_to_display():
+    from app.ai.service import validate_answer
+
+    item = Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", "Contrast observation", None)
+    result = validate_answer({
+        "status": "answered",
+        "answer": "Contrast made the sample easier to see [1].",
+        "citation_indices": [1],
+        "suggested_questions": [
+            "  How did the researchers compare the samples? ",
+            "how did the researchers compare the samples?",
+            {"unexpected": True},
+            "Where is [1](https://example.org)?",
+            "Would you like to know more",
+            "What conditions did they test?",
+            "What did the report say about limitations?",
+        ],
+    }, [item], "What was observed?")
+    assert result.status == "answered"
+    assert result.suggested_questions == [
+        "How did the researchers compare the samples?",
+        "What conditions did they test?",
+    ]
+
+
+def test_missing_fact_can_offer_targeted_questions_without_claims():
+    from app.ai.service import validate_answer
+
+    item = Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", "A setup used two samples", None)
+    result = validate_answer({
+        "status": "insufficient_evidence",
+        "answer": "An unsupported guess.",
+        "citation_indices": [1],
+        "suggested_questions": ["How was the experiment set up?"],
+    }, [item], "What was the instrument's serial number?")
+    assert result.status == "insufficient_evidence"
+    assert result.citations == []
+    assert "unsupported guess" not in result.answer
+    assert result.suggested_questions == ["How was the experiment set up?"]

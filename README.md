@@ -109,6 +109,15 @@ python -m scripts.index_sources
 uvicorn app.main:app
 ```
 
+Для DeepSeek через OpenRouter задайте `LLM_BASE_URL=https://openrouter.ai/api/v1`,
+`LLM_MODEL=deepseek/deepseek-v4.1-flash` и ключ OpenRouter в `LLM_API_KEY`.
+Ключи эмбеддингов и reranker задаются отдельно. `RAG_MAX_OUTPUT_TOKENS`
+ограничивает длину генерации, по умолчанию 3200 токенов.
+Чат учитывает контекст диалога и запрошенную глубину ответа. Ссылки в тексте
+соответствуют проверенным фрагментам из БД. Поле `suggested_questions`
+содержит до двух коротких вопросов для продолжения разговора, если их
+подсказывает найденный контекст.
+
 Начальные параметры `RAG_CHUNK_TOKENS=400`, `RAG_CHUNK_OVERLAP=50`,
 `RAG_CANDIDATE_LIMIT=20`, `RAG_CONTEXT_LIMIT=5`, `RAG_BATCH_SIZE=32`.
 `RAG_TIMEOUT` задаёт таймаут каждой попытки, `RAG_RETRIES` задаёт число

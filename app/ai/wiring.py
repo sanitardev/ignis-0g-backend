@@ -18,9 +18,10 @@ async def configured_providers(settings: RagSettings):
         llm = RemoteLLM(
             JsonAPI(client, base_url, key, settings.timeout, settings.retries),
             getenv("LLM_MODEL", "qwen3-8"),
+            settings.max_output_tokens,
         )
         embedding_url = getenv("EMBEDDING_BASE_URL")
-        embedding_key = getenv("EMBEDDING_API_KEY") or (key if not embedding_url else "")
+        embedding_key = getenv("EMBEDDING_API_KEY", "")
         embedding = RemoteEmbedding(
             JsonAPI(client, embedding_url or base_url, embedding_key, settings.timeout, settings.retries),
             getenv("EMBEDDING_MODEL", "text-1024"),
@@ -29,7 +30,7 @@ async def configured_providers(settings: RagSettings):
         reranker = None
         if model := getenv("RERANKER_MODEL"):
             reranker_url = getenv("RERANKER_BASE_URL")
-            reranker_key = getenv("RERANKER_API_KEY") or (key if not reranker_url else "")
+            reranker_key = getenv("RERANKER_API_KEY", "")
             reranker = RemoteReranker(
                 JsonAPI(client, reranker_url or base_url, reranker_key, settings.timeout, 0), model
             )
