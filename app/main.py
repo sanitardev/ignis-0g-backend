@@ -13,6 +13,7 @@ from app.schemas.study import Finding, Source, Media
 from app.schemas.assistant import CompareRequest, CompareResponse
 from app.schemas.nexus import Relation, Graph
 from app.repositories import nexus
+from app.ai.llm import ProviderTimeout, ProviderUnavailable
 from app.ai.service import ask
 from app.schemas.assistant import ChatRequest, ChatResponse
 from app.schemas.study import StudyDetail, StudyList, CatalogFilters, Dataset
@@ -103,7 +104,12 @@ async def dataset(study_id: str, dataset_id: UUID):
 async def chat(request: ChatRequest):
     if request.study_id is not None:
         await repository.require_study(request.study_id)
-    return await ask(request)
+    try:
+        return await ask(request)
+    except ProviderTimeout:
+        raise HTTPException(504, ('AI_TIMEOUT', 'Assistant request timed out')) from None
+    except ProviderUnavailable:
+        raise HTTPException(503, ('AI_UNAVAILABLE', 'Assistant unavailable')) from None
 
 @app.get('/health', response_model=Health)
 async def health(request: Request):

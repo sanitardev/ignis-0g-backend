@@ -30,7 +30,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://ignis:${POSTGRES_PASSWORD:-ignis_local}@db:5432/ignis
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-20b}
+      EMBEDDING_CACHE_DIR: /home/ignis/.cache/fastembed
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    volumes:
+      - embedding_models:/home/ignis/.cache
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -44,3 +49,4 @@ services:
 
 volumes:
   postgres_data:
+  embedding_models:

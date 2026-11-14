@@ -1,8 +1,11 @@
-"""PostgreSQL domain models; chunk vectors await an agreed embedding dimension."""
+"""PostgreSQL domain models."""
 from uuid import uuid4
 from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import UserDefinedType
+
+from app.ai.embeddings import DIMENSION
 
 class Base(DeclarativeBase):
     pass
@@ -81,3 +84,24 @@ class Relation(Base):
     evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     __table_args__ = (UniqueConstraint('from_study_id', 'to_study_id', 'relation_type'), CheckConstraint('from_study_id <> to_study_id', name='ck_relations_distinct_studies'), CheckConstraint("relation_type IN ('supports','contradicts','complements','similar')", name='ck_relations_type'))
+
+
+class EmbeddingVector(UserDefinedType):
+    cache_ok = True
+
+    def __init__(self, dimension=DIMENSION):
+        self.dimension = dimension
+
+    def get_col_spec(self, **kw):
+        return f"VECTOR({self.dimension})"
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    source_id: Mapped[UUID] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    attributes: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    embedding: Mapped[str] = mapped_column(EmbeddingVector(), nullable=False)
+    __table_args__ = (UniqueConstraint("source_id", "chunk_index"),)

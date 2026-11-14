@@ -2,8 +2,14 @@ import os
 from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
+def async_database_url(url: str) -> str:
+    if url.startswith(("postgresql://", "postgres://")):
+        return "postgresql+asyncpg://" + url.split("://", 1)[1]
+    return url
+
+
 engine = create_async_engine(
-    os.getenv('DATABASE_URL', 'postgresql+asyncpg://ignis:ignis_local@127.0.0.1:55432/ignis'),
+    async_database_url(os.getenv('DATABASE_URL', 'postgresql+asyncpg://ignis:ignis_local@127.0.0.1:55432/ignis')),
     pool_pre_ping=True, pool_timeout=5,
     connect_args={'timeout': 5, 'command_timeout': 5},
 )
