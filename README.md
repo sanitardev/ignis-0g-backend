@@ -27,7 +27,7 @@ uvicorn app.main:app --reload
 
 Задайте `DATABASE_URL` с драйвером asyncpg, например `postgresql+asyncpg://user:password@localhost:5432/ignis`, затем выполните `alembic upgrade head`. Для отката: `alembic downgrade base`. API использует DATABASE_URL из окружения; по умолчанию подключается к локальному Compose на порту 55432.
 
-Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Миграция RAG создаёт `chunks` с векторами размерности 384 и включает pgvector. Для базы с уже установленным расширением будет использована существующая установка.
+Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Миграции RAG включают pgvector и приводят `chunks.embedding` к размерности 1024. Для базы с уже установленным расширением будет использована существующая установка.
 
 ## Локальная база данных
 
@@ -61,12 +61,13 @@ DATABASE_URL=postgresql+asyncpg://ignis:ignis_local@127.0.0.1:55432/ignis .venv/
 ## Индексация и чат
 
 Настройте `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` по `.env.example`.
-Для эмбеддингов задайте `EMBEDDING_MODEL` и, если сервис отдельный, его
-`EMBEDDING_BASE_URL` и `EMBEDDING_API_KEY`. Требуются векторы **384** измерений,
-как в миграции `0002_rag_chunks`. По умолчанию адаптер передаёт
-`dimensions=384`. Для модели с фиксированной размерностью 384 можно задать
-`EMBEDDING_SEND_DIMENSIONS=false`. Перед отправкой документов проверьте новый
-провайдер на синтетическом запросе. При смене модели повторите индексацию.
+Для Alem задайте отдельные ключи `LLM_API_KEY`, `EMBEDDING_API_KEY` и
+`RERANKER_API_KEY`. Модели в примере — `qwen3-8`, `text-1024` и
+`reranker`. Модель эмбеддингов должна возвращать **1024** измерения. Адаптер
+для `text-1024` использует её собственную размерность. Параметр
+`EMBEDDING_SEND_DIMENSIONS=true` включает передачу `dimensions=1024`
+для совместимых API. Миграция `0003_embedding_dimension_1024` очищает
+производный индекс чанков. Повторно постройте его из сохранённых источников.
 
 ```bash
 set -a

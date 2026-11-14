@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from app.ai.providers import JsonAPI, ProviderUnavailable
 
-DIMENSION = 384
+DIMENSION = 1024
 
 
 def vector_parameter(vector: Sequence[float]) -> str:

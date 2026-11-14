@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.ai.embeddings import DIMENSION
 from app.ai.ingestion import document_chunks, tokenizer
 from app.ai.providers import ProviderUnavailable
 from app.ai.retrieval import Evidence
@@ -130,7 +131,7 @@ def test_reindex_on_model_change_and_keep_old_index_when_provider_fails(monkeypa
                 replacement = MockEmbedding()
                 replacement.model_id = "new-embedding-model"
                 replacement.vector = [1.0]
-                with pytest.raises(ProviderUnavailable, match="384-dimensional"):
+                with pytest.raises(ProviderUnavailable, match=f"{DIMENSION}-dimensional"):
                     await ingestion.index_sources(replacement, settings)
                 assert (await rag.ask(request)).citations == first.citations
 

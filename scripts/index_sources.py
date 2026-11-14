@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import sys
 
-from app.ai.embeddings import vector_parameter
+from app.ai.embeddings import DIMENSION, vector_parameter
 from app.ai.ingestion import index_sources
 from app.ai.providers import ProviderUnavailable
 from app.ai.settings import settings_from_env
@@ -16,7 +16,7 @@ async def main(check_provider: bool) -> int:
         async with configured_providers(settings) as (embedding, _, __):
             if check_provider:
                 vector_parameter(await embedding.embed_query("Synthetic embedding dimension check"))
-                print("Embedding provider returned a valid 384-dimensional vector")
+                print(f"Embedding provider returned a valid {DIMENSION}-dimensional vector")
                 return 0
             print(f"Indexed sources: {await index_sources(embedding, settings)}")
         return 0

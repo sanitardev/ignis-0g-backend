@@ -1,6 +1,9 @@
+from app.ai.embeddings import DIMENSION
+
+
 class MockEmbedding:
-    model_id = "mock-384"
-    vector = [1.0] + [0.0] * 383
+    model_id = f"mock-{DIMENSION}"
+    vector = [1.0] + [0.0] * (DIMENSION - 1)
 
     def __init__(self):
         self.batches = []

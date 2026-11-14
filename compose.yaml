@@ -30,13 +30,13 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://ignis:${POSTGRES_PASSWORD:-ignis_local}@db:5432/ignis
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://ts.ree.kz/api/ai/v1}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://llm.alem.ai/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-haiku-5-5}
+      LLM_MODEL: ${LLM_MODEL:-qwen3-8}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      EMBEDDING_SEND_DIMENSIONS: ${EMBEDDING_SEND_DIMENSIONS:-true}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-1024}
+      EMBEDDING_SEND_DIMENSIONS: ${EMBEDDING_SEND_DIMENSIONS:-false}
       RERANKER_BASE_URL: ${RERANKER_BASE_URL:-}
       RERANKER_API_KEY: ${RERANKER_API_KEY:-}
       RERANKER_MODEL: ${RERANKER_MODEL:-}
