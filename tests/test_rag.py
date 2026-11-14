@@ -196,3 +196,16 @@ def test_inline_citations_determine_response_order():
     assert [item.chunk_id for item in response.citations] == [evidence[1].chunk_id, evidence[0].chunk_id]
     for answer in ("No inline source.", "Invalid [3].", "Mixed [1][0]."):
         assert validate_answer({"answer": answer}, evidence, "Question").status == "insufficient_evidence"
+
+
+def test_global_context_prioritizes_multiple_studies():
+    from uuid import uuid4
+    from app.ai.retrieval import Evidence
+    from app.ai.service import select_context
+
+    rows = [
+        Evidence(uuid4(), uuid4(), slug, 'Test', 'https://example.org', 'Example', None)
+        for slug in ('flex', 'flex', 'acme', 'saffire')
+    ]
+    assert select_context(rows, 3, diversify=True) == [rows[0], rows[2], rows[3]]
+    assert select_context(rows, 3, diversify=False) == rows[:3]

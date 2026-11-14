@@ -23,10 +23,12 @@ class RemoteLLM:
         }
         if self.api.base_url == "https://openrouter.ai/api/v1":
             payload.update(
-                max_tokens=600,
+                max_tokens=1200,
                 response_format={"type": "json_object"},
                 provider={"sort": "latency", "require_parameters": True},
             )
+            if self.model.startswith("deepseek/deepseek-v4"):
+                payload["reasoning"] = {"enabled": False}
         response = await self.api.post("/chat/completions", payload)
         try:
             choice = response["choices"][0]

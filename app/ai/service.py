@@ -36,6 +36,22 @@ def insufficient_evidence(question: str = "") -> ChatResponse:
     )
 
 
+def select_context(evidence: list[Evidence], limit: int, *, diversify: bool) -> list[Evidence]:
+    if not diversify:
+        return evidence[:limit]
+
+    first_per_study = []
+    remaining = []
+    seen = set()
+    for item in evidence:
+        if item.study_slug in seen:
+            remaining.append(item)
+        else:
+            first_per_study.append(item)
+            seen.add(item.study_slug)
+    return (first_per_study + remaining)[:limit]
+
+
 class RagService:
     def __init__(
         self, embedding: EmbeddingProvider, reranker: RerankerProvider | None,
@@ -84,7 +100,7 @@ class RagService:
             except ProviderUnavailable:
                 logger.info("rag stage=rerank outcome=fallback")
 
-        context = evidence[:self.settings.context_limit]
+        context = select_context(evidence, self.settings.context_limit, diversify=request.scope == "global")
         logger.info("rag stage=generation context_count=%d", len(context))
         result = validate_answer(await self.llm.generate(build_messages(request, context)), context, request.message)
         logger.info("rag outcome=%s citations=%d elapsed_ms=%d", result.status, len(result.citations), (monotonic() - started) * 1000)

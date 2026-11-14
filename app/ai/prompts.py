@@ -12,7 +12,9 @@ Preserve experimental conditions and units exactly as reported.
 Keep the answer concise and write Markdown without HTML. Cite each factual
 statement inline using [1], [2], etc., where each number is an evidence index.
 Return only a JSON object of the form {"answer":"Statement [1]."}.
-If the evidence is insufficient, return {"answer":""}.
+For broad catalog questions, summarize the studies represented in the evidence.
+Give a short purpose and outcome where supported, and state that coverage is partial.
+If none of the evidence supports an answer to the question, return {"answer":""}.
 """.strip()
 
 
