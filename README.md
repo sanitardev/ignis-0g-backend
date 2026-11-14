@@ -27,7 +27,7 @@ uvicorn app.main:app --reload
 
 Задайте `DATABASE_URL` с драйвером asyncpg, например `postgresql+asyncpg://user:password@localhost:5432/ignis`, затем выполните `alembic upgrade head`. Для отката: `alembic downgrade base`. API использует DATABASE_URL из окружения; по умолчанию подключается к локальному Compose на порту 55432.
 
-Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Таблица chunks и расширение pgvector будут добавлены отдельной миграцией после согласования модели и размерности эмбеддингов.
+Миграция создаёт таблицы studies, sources, findings, datasets, media и relations. Принадлежность источника одной из сторон relation проверяется импортёром. Миграция `0002_chunks` включает pgvector и создаёт таблицу `chunks`. Поле `embedding` использует тип `vector` без фиксированной размерности до выбора модели. Перед добавлением индекса и поиском по рабочим данным нужно зафиксировать одну размерность. Генерация эмбеддингов и индексация ещё не подключены.
 
 ## Локальная база данных
 

@@ -1,5 +1,6 @@
-"""PostgreSQL domain models; chunk vectors await an agreed embedding dimension."""
+"""PostgreSQL domain models for the catalog and source chunks."""
 from uuid import uuid4
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -81,3 +82,17 @@ class Relation(Base):
     evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     __table_args__ = (UniqueConstraint('from_study_id', 'to_study_id', 'relation_type'), CheckConstraint('from_study_id <> to_study_id', name='ck_relations_distinct_studies'), CheckConstraint("relation_type IN ('supports','contradicts','complements','similar')", name='ck_relations_type'))
+
+
+class Chunk(Base):
+    __tablename__ = 'chunks'
+    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    source_id: Mapped[UUID] = mapped_column(ForeignKey('sources.id', ondelete='CASCADE'), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_metadata: Mapped[dict] = mapped_column('metadata', JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint('source_id', 'chunk_index'),
+        CheckConstraint('chunk_index >= 0', name='ck_chunks_nonnegative_index'),
+    )
