@@ -315,3 +315,44 @@ def test_insufficient_evidence_never_returns_related_claims_or_citations():
     assert result.status == "insufficient_evidence"
     assert result.citations == []
     assert not result.related_study_ids
+
+
+def test_dialogue_suggestions_are_optional_and_safe_to_display():
+    from app.ai.service import validate_answer
+
+    item = Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", "Contrast observation", None)
+    result = validate_answer({
+        "status": "answered",
+        "answer": "Contrast made the sample easier to see [1].",
+        "citation_indices": [1],
+        "suggested_questions": [
+            "  How did the researchers compare the samples? ",
+            "how did the researchers compare the samples?",
+            {"unexpected": True},
+            "Where is [1](https://example.org)?",
+            "Would you like to know more",
+            "What conditions did they test?",
+            "What did the report say about limitations?",
+        ],
+    }, [item], "What was observed?")
+    assert result.status == "answered"
+    assert result.suggested_questions == [
+        "How did the researchers compare the samples?",
+        "What conditions did they test?",
+    ]
+
+
+def test_missing_fact_can_offer_targeted_questions_without_claims():
+    from app.ai.service import validate_answer
+
+    item = Evidence(uuid4(), uuid4(), "flex", "Report", "https://example.org", "A setup used two samples", None)
+    result = validate_answer({
+        "status": "insufficient_evidence",
+        "answer": "An unsupported guess.",
+        "citation_indices": [1],
+        "suggested_questions": ["How was the experiment set up?"],
+    }, [item], "What was the instrument's serial number?")
+    assert result.status == "insufficient_evidence"
+    assert result.citations == []
+    assert "unsupported guess" not in result.answer
+    assert result.suggested_questions == ["How was the experiment set up?"]

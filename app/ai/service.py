@@ -18,9 +18,12 @@ class GroundedAnswer(BaseModel):
     status: Literal["answered", "insufficient_evidence"]
     answer: str
     citation_indices: list[int]
+    suggested_questions: object = None
 
 
-def insufficient_evidence(question: str = "") -> ChatResponse:
+def insufficient_evidence(
+    question: str = "", *, suggestions: list[str] | None = None,
+) -> ChatResponse:
     russian = not question or bool(re.search(r"[А-Яа-яЁё]", question))
     message = (
         "В доступных источниках пока нет сведений, на которые можно опереться для ответа."
@@ -31,7 +34,7 @@ def insufficient_evidence(question: str = "") -> ChatResponse:
         answer=message,
         citations=[],
         related_study_ids=[],
-        suggested_questions=[],
+        suggested_questions=suggestions or [],
     )
 
 
@@ -102,14 +105,40 @@ def select_context(evidence: list[Evidence], limit: int) -> list[Evidence]:
     return selected
 
 
+def suggested_questions(raw: object, current_question: str) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    questions = []
+    seen = {" ".join(current_question.casefold().split())}
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        question = " ".join(item.split())
+        if (
+            not 5 <= len(question) <= 160
+            or not question.endswith(("?", "？", "؟"))
+            or re.search(r"[<>\[\]`]|://", question)
+        ):
+            continue
+        key = question.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        questions.append(question)
+        if len(questions) == 2:
+            break
+    return questions
+
+
 def validate_answer(raw: object, evidence: list[Evidence], question: str) -> ChatResponse:
     try:
         result = GroundedAnswer.model_validate(raw)
     except ValidationError:
         return insufficient_evidence(question)
 
+    suggestions = suggested_questions(result.suggested_questions, question)
     if result.status == "insufficient_evidence":
-        return insufficient_evidence(question)
+        return insufficient_evidence(question, suggestions=suggestions)
 
     answer = result.answer.strip()
     markers = list(dict.fromkeys(re.findall(r"\[([0-9]+)\]", answer)))
@@ -140,5 +169,5 @@ def validate_answer(raw: object, evidence: list[Evidence], question: str) -> Cha
         answer=answer,
         citations=citations,
         related_study_ids=list(dict.fromkeys(item.study_slug for item in cited)),
-        suggested_questions=[],
+        suggested_questions=suggestions,
     )
