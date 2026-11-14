@@ -3,9 +3,10 @@ import os
 import time
 import asyncio
 from uuid import UUID, uuid4
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.schemas.common import ErrorResponse, Health
@@ -144,3 +145,8 @@ async def compare(request: CompareRequest):
     for study_id in request.study_ids:
         await repository.require_study(study_id)
     return CompareResponse(status='insufficient_evidence',summary='AI comparison is not enabled.',similarities=[],differences=[],limitations=['AI integration is pending.'],citations=[])
+
+
+@app.get("/chat", include_in_schema=False)
+async def chat_page():
+    return FileResponse(Path(__file__).with_name("static") / "chat.html", media_type="text/html")

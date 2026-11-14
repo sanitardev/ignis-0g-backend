@@ -9,3 +9,6 @@ test = ["pytest>=8,<10"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["static/*.html"]

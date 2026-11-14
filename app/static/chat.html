@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IGNIS 0G · Чат исследований</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0e13;--panel:#10141c;--line:#2b313d;--text:#eef0f4;--muted:#a5afbf;--fire:#ff9a61}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at 75% 0%,#2b1a1b,transparent 45%),var(--bg);color:var(--text);font:16px/1.55 "Trebuchet MS",sans-serif}
+header{border-bottom:1px solid var(--line);padding:17px max(24px,calc((100% - 1100px)/2));display:flex;justify-content:space-between;align-items:center;gap:12px}
+.brand{letter-spacing:.19em;font-weight:bold;white-space:nowrap}.brand span,.eyebrow{color:var(--fire)}
+a{color:var(--fire)}header a{font-size:14px}
+main{max-width:1148px;margin:auto;padding:32px 24px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:24px}
+aside,.chat{border:1px solid var(--line);background:var(--panel);border-radius:14px}
+aside{align-self:start;padding:22px}
+.eyebrow{font:12px monospace;letter-spacing:.13em;text-transform:uppercase}
+h1{font-size:clamp(24px,4vw,38px);line-height:1.1;margin:9px 0 12px}
+label{display:block;font-size:14px;font-weight:bold;margin:19px 0 8px}
+select,textarea,button{font:inherit;color:inherit;border:1px solid var(--line);border-radius:8px;background:#0b0e13}
+select,textarea{width:100%;padding:10px}
+button{cursor:pointer;padding:8px 12px;text-align:left}
+button:hover:not(:disabled){border-color:var(--fire)}button:disabled{opacity:.55;cursor:default}
+:focus-visible{outline:2px solid var(--fire);outline-offset:3px}
+.samples{display:grid;gap:7px;margin:10px 0 0}.samples button{font-size:14px}
+.chat{min-height:570px;display:flex;flex-direction:column;overflow:hidden}
+.chat-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line);gap:10px}.chat-head span{color:var(--muted);font-size:14px}
+#messages{flex:1;min-height:320px;max-height:58vh;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+.message{border:1px solid var(--line);background:#161c27;padding:13px 16px;border-radius:12px;max-width:92%;overflow-wrap:anywhere}
+.message.user{align-self:flex-end;background:#291e1c;border-color:#53372d}.message.error{border-color:#ab674c}
+.message p{white-space:pre-wrap;margin:4px 0}.message small,.status,.hint{color:var(--muted);font-size:13px}
+details{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}summary{cursor:pointer;color:var(--fire);font-size:14px}details p{font-size:14px}
+form{padding:16px 20px;border-top:1px solid var(--line)}form label{margin-top:0}textarea{resize:vertical;min-height:64px}
+.form-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px}
+.send{background:var(--fire);color:#1d120f;font-weight:bold;border-color:var(--fire)}
+@media(max-width:720px){main{grid-template-columns:1fr;padding:18px 12px;gap:14px}aside{padding:16px}#messages{max-height:50vh}.chat{min-height:0}}
+</style>
+</head>
+<body>
+<header><div class="brand">IGNIS <span>0G</span></div><a href="/docs">Swagger API ↗</a></header>
+<main>
+<aside>
+<div class="eyebrow">Микрогравитация</div>
+<h1>Чат исследований</h1>
+<label for="scope">Область поиска</label>
+<select id="scope"><option value="">Весь каталог</option></select>
+<div id="catalog-status" class="status" role="status"></div>
+<label>Примеры вопросов</label>
+<div class="samples">
+<button type="button" data-study="flex-1">Какие виды топлива изучались в FLEX-1?</button>
+<button type="button" data-study="acme-bre">Какую горелку использовали в ACME BRE и что она имитировала?</button>
+<button type="button" data-study="saffire-i-iii">Что показали эксперименты Saffire I–III о распространении пламени?</button>
+<button type="button" data-study="flex-1">Кто написал роман «Обломов»?</button>
+</div>
+</aside>
+<section class="chat" aria-label="Диалог">
+<div class="chat-head"><span id="active-scope">Весь каталог</span><button type="button" id="reset">Очистить чат</button></div>
+<div id="messages" role="log" aria-live="polite" aria-label="Сообщения"></div>
+<form id="composer">
+<label for="question">Вопрос</label>
+<textarea id="question" maxlength="2000" rows="2" placeholder="Спроси об эксперименте или его результатах…" required></textarea>
+<div class="form-foot"><span class="hint" id="request-status" role="status">Enter — отправить · Shift+Enter — новая строка</span><button class="send" type="submit" id="send">Отправить ↑</button></div>
+</form>
+</section>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+const scope = byId('scope'), messages = byId('messages'), input = byId('question');
+const form = byId('composer'), status = byId('request-status');
+const samples = [...document.querySelectorAll('[data-study]')];
+const defaultStatus = status.textContent;
+let history = [], busy = false;
+
+function element(tag, content) {
+  const node = document.createElement(tag);
+  node.textContent = content;
+  return node;
+}
+function message(role, text, citations = [], label = '') {
+  const block = element('article', '');
+  block.className = 'message ' + role;
+  block.append(element('small', label || (role === 'user' ? 'Ты' : 'Ассистент')), element('p', text));
+  citations.forEach((citation, index) => {
+    const details = element('details', '');
+    details.append(element('summary', '[' + (index + 1) + '] ' + citation.title));
+    if (citation.locator) details.append(element('small', citation.locator));
+    details.append(element('p', citation.excerpt));
+    try {
+      const url = new URL(citation.url);
+      if (url.protocol === 'https:' || url.protocol === 'http:') {
+        const link = element('a', 'Открыть источник ↗');
+        link.href = url.href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        details.append(link);
+      }
+    } catch {}
+    block.append(details);
+  });
+  messages.append(block);
+  messages.scrollTop = messages.scrollHeight;
+}
+function clearChat() {
+  history = [];
+  messages.replaceChildren();
+  message('assistant', 'Задай вопрос об исследовании или выбери готовый пример слева.');
+}
+function changeScope() {
+  byId('active-scope').textContent = scope.options[scope.selectedIndex].textContent;
+  clearChat();
+}
+function recentHistory() {
+  let budget = 12000;
+  const result = [];
+  for (let index = history.length - 2; index >= Math.max(0, history.length - 12); index -= 2) {
+    const pair = history.slice(index, index + 2);
+    const size = pair.reduce((sum, item) => sum + Array.from(item.content).length, 0);
+    if (size > budget) break;
+    budget -= size;
+    result.unshift(...pair);
+  }
+  return result;
+}
+function setBusy(value) {
+  busy = value;
+  for (const control of [scope, byId('send'), byId('reset'), ...samples]) control.disabled = value;
+}
+clearChat();
+scope.addEventListener('change', changeScope);
+byId('reset').addEventListener('click', clearChat);
+samples.forEach(button => button.addEventListener('click', () => {
+  if ([...scope.options].some(option => option.value === button.dataset.study) && scope.value !== button.dataset.study) {
+    scope.value = button.dataset.study;
+    changeScope();
+  }
+  input.value = button.textContent.trim();
+  input.focus();
+}));
+input.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    if (!busy) form.requestSubmit();
+  }
+});
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  const question = input.value.trim();
+  if (!question || busy) return;
+  const body = {message: question, history: recentHistory()};
+  if (scope.value) body.study_id = scope.value;
+  input.value = '';
+  message('user', question);
+  setBusy(true);
+  status.textContent = 'Ищу ответ в источниках…';
+  try {
+    const response = await fetch('/api/v1/assistant/chat', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body), signal: AbortSignal.timeout(45000)
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const retry = response.headers.get('Retry-After');
+      const error = data.error;
+      throw new Error((error ? error.code + ': ' + error.message : 'Ошибка HTTP ' + response.status)
+        + (retry ? ' Повтори через ' + retry + ' сек.' : '')
+        + (error?.request_id ? '\nID запроса: ' + error.request_id : ''));
+    }
+    message('assistant', data.answer, data.citations, data.status === 'insufficient_evidence' ? 'Недостаточно данных' : 'Ассистент');
+    history.push({role:'user',content:question}, {role:'assistant',content:Array.from(data.answer).slice(0,2000).join('')});
+    history = history.slice(-12);
+  } catch (error) {
+    message('error', error.name === 'TimeoutError' ? 'Сервер не успел ответить.' : error.message, [], 'Ошибка запроса');
+    if (!input.value) input.value = question;
+  } finally {
+    setBusy(false);
+    status.textContent = defaultStatus;
+    input.focus();
+  }
+});
+(async () => {
+  try {
+    for (let offset = 0; ; ) {
+      const response = await fetch('/api/v1/studies?limit=100&offset=' + offset);
+      if (!response.ok) throw new Error();
+      const page = await response.json();
+      page.items.forEach(study => scope.add(new Option(study.title, study.id)));
+      offset += page.items.length;
+      if (offset >= page.total || !page.items.length) break;
+    }
+  } catch {
+    byId('catalog-status').textContent = 'Каталог недоступен. Поиск по всей базе остаётся доступен.';
+  }
+})();
+</script>
+</body>
+</html>
