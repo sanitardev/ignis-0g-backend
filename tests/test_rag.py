@@ -180,3 +180,19 @@ def test_embedding_adapter_orders_batch_response_and_requests_schema_dimension()
             assert json.loads(vector_parameter(second))[0] == 2
 
     asyncio.run(run())
+
+
+def test_inline_citations_determine_response_order():
+    from uuid import uuid4
+    from app.ai.retrieval import Evidence
+    from app.ai.service import validate_answer
+
+    evidence = [
+        Evidence(uuid4(), uuid4(), 'demo', 'Test', 'https://example.org', 'Example', None)
+        for _ in range(2)
+    ]
+    response = validate_answer({"answer": "Second [2]. First [1]. Second again [2].", "citation_indices": [1]}, evidence, "Question")
+    assert response.answer == "Second [1]. First [2]. Second again [1]."
+    assert [item.chunk_id for item in response.citations] == [evidence[1].chunk_id, evidence[0].chunk_id]
+    for answer in ("No inline source.", "Invalid [3].", "Mixed [1][0]."):
+        assert validate_answer({"answer": answer}, evidence, "Question").status == "insufficient_evidence"

@@ -19,7 +19,6 @@ from app.schemas.assistant import ChatRequest, ChatResponse, Citation
 class GroundedAnswer(BaseModel):
     model_config = ConfigDict(strict=True)
     answer: str
-    citation_indices: list[int]
 
 
 def insufficient_evidence(question: str = "") -> ChatResponse:
@@ -107,24 +106,22 @@ def validate_answer(raw: object, evidence: list[Evidence], question: str) -> Cha
 
     answer = result.answer.strip()
     markers = list(dict.fromkeys(re.findall(r"\[([0-9]+)\]", answer)))
-    indices = result.citation_indices
+    valid_markers = {str(index) for index in range(1, len(evidence) + 1)}
     reason = None
     if not answer:
         reason = 'empty_answer'
     elif re.search(r"<(?:/?[A-Za-z]|!--)", answer):
         reason = 'html_in_answer'
-    elif not indices:
+    elif not markers:
         reason = 'no_citations'
-    elif len(set(indices)) != len(indices) or any(not 1 <= index <= len(evidence) for index in indices):
+    elif any(marker not in valid_markers for marker in markers):
         reason = 'invalid_citation_indices'
-    elif markers != [str(index) for index in indices]:
-        reason = 'citation_marker_mismatch'
     if reason:
         logger.info("rag stage=validation outcome=%s", reason)
         return insufficient_evidence(question)
 
-    cited = [evidence[index - 1] for index in indices]
-    renumber = {str(index): str(number) for number, index in enumerate(indices, start=1)}
+    cited = [evidence[int(marker) - 1] for marker in markers]
+    renumber = {marker: str(number) for number, marker in enumerate(markers, start=1)}
     answer = re.sub(r"\[([0-9]+)\]", lambda match: f"[{renumber[match[1]]}]", answer)
     citations = [
         Citation(

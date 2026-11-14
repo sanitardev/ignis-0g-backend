@@ -1,10 +1,10 @@
 import json
 import logging
-
-logger = logging.getLogger("uvicorn.error.rag")
 from collections.abc import Sequence
 
 from app.ai.providers import JsonAPI, Message, ProviderUnavailable
+
+logger = logging.getLogger("uvicorn.error.rag")
 
 
 class RemoteLLM:
@@ -18,13 +18,13 @@ class RemoteLLM:
         response = await self.api.post("/chat/completions", {
             "model": self.model,
             "messages": list(messages),
-            "max_tokens": 1200,
+            "max_tokens": 2400,
             "temperature": 0.2,
         })
         try:
             choice = response["choices"][0]
             if choice["finish_reason"] not in {"stop", "end_turn"}:
-                logger.info("rag stage=generation outcome=incomplete_completion")
+                logger.info("rag stage=generation outcome=%s", "token_limit" if choice["finish_reason"] == "length" else "incomplete_completion")
                 return None
             content = choice["message"]["content"].strip()
             if content.startswith("```json") and content.endswith("```"):
